@@ -87,4 +87,8 @@ def build_transceiver_kwargs(cfg):
         "slice_config": s_cfg or {},
         "mode": t_cfg.get("mode", "message"),
         "cache_path": c_cfg.get("path"),
+        "debug": t_cfg.get("debug", False),
+        # Path to testbed.toml (swf-common-lib config); falls back to
+        # SWF_TESTBED_CONFIG env var or 'workflows/testbed.toml' if None.
+        "config_path": t_cfg.get("testbed_config"),
     }

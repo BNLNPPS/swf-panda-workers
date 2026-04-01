@@ -12,6 +12,7 @@ dependencies = [
     "cachetools",
     "pyyaml",
     "stomp.py",
+    "swf-common-lib",
 ]
 
 [project.scripts]

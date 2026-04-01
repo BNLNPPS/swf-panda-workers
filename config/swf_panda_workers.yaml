@@ -21,6 +21,9 @@ transceiver:
   #   rest     – call iDDS REST API directly via PandaClient
   mode: message
 
+  # Debug mode – enables detailed logging
+  debug: false
+
 # ---------------------------------------------------------------------------
 # Broker configurations
 #
