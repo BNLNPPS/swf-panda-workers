@@ -1,6 +1,6 @@
 # Message & API formats
 
-## STOMP message formats (`/topic/idds.workflow`)
+## STOMP message formats (`/topic/panda.workers`)
 
 All outbound messages share the same STOMP headers:
 
