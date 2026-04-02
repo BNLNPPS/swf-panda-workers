@@ -412,7 +412,7 @@ class Subscriber:
         """
         parts = []
 
-        # Namespace (instance) filter
+        # Namespace filter
         if self._namespace:
             parts.append(f"namespace='{self._namespace}'")
 
