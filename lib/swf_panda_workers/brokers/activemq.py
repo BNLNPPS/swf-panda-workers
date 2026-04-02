@@ -27,7 +27,7 @@ Broker configuration dict (passed as `broker` kwarg):
     "ssl_key_file":    "...",      # optional, path to client key
     "ssl_cert_file":   "...",      # optional, path to client certificate
     "ssl_ca_certs":    "...",      # optional, path to CA bundle
-    "selector":  "instance='prod' AND run_id='123'",  # optional
+    "selector":  "namespace='prod' AND run_id='123'",  # optional
 }
 
 Usage example
@@ -173,8 +173,8 @@ class Publisher:
     name : str
         Human-readable label used in log messages.
     namespace : str
-        The `instance` value injected into published message headers when the
-        caller does not supply an ``instance`` header explicitly.
+        The `namespace` value injected into published message headers when the
+        caller does not supply a ``namespace`` header explicitly.
     broker : dict
         Broker configuration (host, port, destination, credentials, SSL …).
         See module docstring.
@@ -216,7 +216,7 @@ class Publisher:
         Serialize *msg* to JSON and send it to the configured destination.
 
         :param msg:     Message body (dict).
-        :param headers: STOMP headers dict.  ``instance`` is injected from
+        :param headers: STOMP headers dict.  ``namespace`` is injected from
                         ``self._namespace`` if absent.
         """
         if self._stopped:
@@ -224,8 +224,8 @@ class Publisher:
             return
 
         send_headers = dict(headers or {})
-        if self._namespace and "instance" not in send_headers:
-            send_headers["instance"] = self._namespace
+        if self._namespace and "namespace" not in send_headers:
+            send_headers["namespace"] = self._namespace
 
         body = json.dumps(msg, default=str)
 
@@ -318,7 +318,7 @@ class Subscriber:
     name : str
         Human-readable label used in log messages.
     namespace : str
-        The ``instance`` selector value injected into the STOMP subscription
+        The ``namespace`` selector value injected into the STOMP subscription
         headers (combined with any broker-level selector).
     broker : dict
         Broker configuration (host, port, destination, credentials,
@@ -414,7 +414,7 @@ class Subscriber:
 
         # Namespace (instance) filter
         if self._namespace:
-            parts.append(f"instance='{self._namespace}'")
+            parts.append(f"namespace='{self._namespace}'")
 
         # Broker-level selector (may already include run_id filter, etc.)
         broker_selector = self._broker.get("selector", "")
