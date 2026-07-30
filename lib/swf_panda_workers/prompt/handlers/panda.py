@@ -218,3 +218,78 @@ class PandaClient(object):
                 logger.error(log_prefix + str(ex))
                 logger.error(traceback.format_exc())
             raise ex
+
+    def add_target_slots(
+        self,
+        panda_queue,
+        slots,
+        global_share=None,
+        resource_type=None,
+        expiration_date=None,
+        logger=None,
+        log_prefix="",
+    ):
+        """
+        Set the target number of slots for a PanDA queue, to build up job pressure
+        ahead of workers starting.
+
+        Calls the PanDA server's POST /v1/harvester/add_target_slots endpoint.
+        Requires a secure connection and the production role.
+
+        Corresponds to the server-side 'add_target_slots' handler in
+        pandaserver/api/v1/harvester_api.py, and follows the request/response
+        envelope used by pandaharvester's PandaCommunicator (POST to a
+        'harvester/<action>' path, then unwrap {"success", "message", "data"}).
+
+        :param panda_queue: Name of the PanDA queue, e.g. 'CERN'.
+        :param slots: Number of slots to request, e.g. 10000.
+        :param global_share: Optional global share the slots apply to (default:
+                            the whole queue), e.g. 'User Analysis'.
+        :param resource_type: Optional resource type the slots apply to (default:
+                            the whole queue), e.g. 'SCORE' or 'MCORE'.
+        :param expiration_date: Optional expiration date of the slots (default:
+                            applies indefinitely).
+        :param logger: Optional logger.
+        :param log_prefix: Log message prefix.
+        :return: True if the server accepted the request, False otherwise.
+        """
+        from pandaclient.Client import http_request_decorator
+
+        @http_request_decorator(
+            endpoint="harvester/add_target_slots",
+            method="post",
+            json_out=True,
+            output_mode="extended",
+        )
+        def _add_target_slots(panda_queue, slots, global_share=None, resource_type=None, expiration_date=None, verbose=False):
+            data = {"panda_queue": panda_queue, "slots": slots}
+            if global_share is not None:
+                data["global_share"] = global_share
+            if resource_type is not None:
+                data["resource_type"] = resource_type
+            if expiration_date is not None:
+                data["expiration_date"] = expiration_date
+            return data
+
+        if logger:
+            logger.info(
+                log_prefix
+                + f"add_target_slots: panda_queue={panda_queue}, slots={slots}, "
+                + f"global_share={global_share}, resource_type={resource_type}, expiration_date={expiration_date}"
+            )
+        try:
+            status, (success, message) = _add_target_slots(
+                panda_queue,
+                slots,
+                global_share=global_share,
+                resource_type=resource_type,
+                expiration_date=expiration_date,
+            )
+            if logger:
+                logger.info(log_prefix + f"add_target_slots: status={status}, success={success}, message={message}")
+            return bool(success)
+        except Exception as ex:
+            if logger:
+                logger.error(log_prefix + str(ex))
+                logger.error(traceback.format_exc())
+            raise ex
