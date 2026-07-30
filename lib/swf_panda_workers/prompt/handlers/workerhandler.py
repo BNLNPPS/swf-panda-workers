@@ -221,6 +221,28 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
         # fallback to storing bare number if cache write fails
         core_count_cache[run_id] = new_core_count
 
+    # Record site -> core_count mapping, noting whether it changed
+    site_core_count_cache = handler_kwargs.get("site_core_count_cache")
+    if site_core_count_cache is not None and site:
+        try:
+            previous_entry = site_core_count_cache.get(site)
+            previous_core_count = (
+                previous_entry.get("current_core_count")
+                if isinstance(previous_entry, dict)
+                else previous_entry
+            )
+            site_changed = previous_core_count != new_core_count
+            site_core_count_cache[site] = {
+                "initial_core_count": previous_entry.get("initial_core_count") if isinstance(previous_entry, dict) else previous_core_count,
+                "current_core_count": new_core_count,
+                "changed": site_changed,
+            }
+            logger.info(
+                f"site_to_core_count_cache[{site}]: {previous_core_count} -> {new_core_count} (changed={site_changed})"
+            )
+        except Exception as ex:
+            logger.warning(f"Failed to update site_to_core_count_cache for site={site}: {ex}")
+
     adjusted_msg = {
         "run_id": run_id,
         "content": {

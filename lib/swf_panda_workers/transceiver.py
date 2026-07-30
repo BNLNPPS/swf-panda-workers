@@ -142,6 +142,8 @@ class Transceiver(BaseAgent):
         self.run_to_idds_ids_cache = PersistentTTLCache(cache_path, "idds_ids", ttl=_ttl)
         # Cache: run_id -> current core_count, expiration 3 days
         self.run_to_core_count_cache = PersistentTTLCache(cache_path, "core_count", ttl=_ttl)
+        # Cache: site -> core_count, expiration 3 days
+        self.site_to_core_count_cache = PersistentTTLCache(cache_path, "site_core_count", ttl=_ttl)
 
         # Populated by _run_worker; referenced by on_message (BaseAgent STOMP path)
         self._handler_kwargs = {}
@@ -255,6 +257,32 @@ class Transceiver(BaseAgent):
                             }
                         except Exception:
                             self.run_to_core_count_cache[run_id] = core_count
+                    # Record site -> core_count mapping for quick lookup by site
+                    if site:
+                        try:
+                            previous_entry = self.site_to_core_count_cache.get(site)
+                            previous_core_count = (
+                                previous_entry.get("current_core_count")
+                                if isinstance(previous_entry, dict)
+                                else previous_entry
+                            )
+                            changed = previous_core_count != core_count
+                            self.site_to_core_count_cache[site] = {
+                                "initial_core_count": core_count,
+                                "current_core_count": core_count,
+                                "changed": changed,
+                            }
+                            self.logger.info(
+                                "site_to_core_count_cache[%s]: %s -> %s (changed=%s)",
+                                site, previous_core_count, core_count, changed,
+                            )
+                        except Exception:
+                            # fallback: store bare number
+                            try:
+                                self.site_to_core_count_cache[site] = core_count
+                            except Exception:
+                                # ignore cache write failure
+                                pass
                     worker_handler(header, msg, None, handler_kwargs, logger=self.logger)
                 elif msg_type == "created_workflow_task":
                     ret = worker_handler(header, msg, None, handler_kwargs, logger=self.logger)
@@ -341,6 +369,7 @@ class Transceiver(BaseAgent):
             "timetolive": self.timetolive,
             "slice_config": self.slice_config,
             "core_count_cache": self.run_to_core_count_cache,
+            "site_core_count_cache": self.site_to_core_count_cache,
             "run_to_idds_ids_cache": self.run_to_idds_ids_cache,
             "mode": self.mode,
             "panda_client": panda_client,
