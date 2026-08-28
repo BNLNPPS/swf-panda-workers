@@ -34,7 +34,7 @@ Two mutually exclusive modes — anything else raises `ValueError` at startup:
 | `message` | Publishes STOMP messages to `/topic/panda.workers` |
 | `rest` | Calls iDDS REST API directly via `PandaClient` |
 
-Mode is validated once in `Transceiver.__init__` and again defensively in `worker_handler`. `panda_client` is instantiated only in `rest` mode and passed through `handler_kwargs`.
+Mode is validated once in `Transceiver.__init__` and again defensively in `worker_handler`. `panda_client` is always instantiated (regardless of mode) and passed through `handler_kwargs` — besides gating iDDS calls in `rest` mode, it also issues `add_target_slots` calls (see below), which are a direct PanDA server REST call independent of the mode setting.
 
 ### Message flow
 
@@ -55,6 +55,7 @@ Both caches are backed by SQLite (`cache.path` in yaml, default `~/.cache/swf_pa
 
 - `run_to_idds_ids_cache`: `run_id → {run_id, request_id, transform_id, workload_id}`
 - `run_to_core_count_cache`: `run_id → current core_count` (seeded from `run_imminent`, updated by `slice_result` scaling)
+- `site_to_core_count_cache`: `site → {initial_core_count, current_core_count, changed}` (seeded from `run_imminent_worker`, updated by `slice_result` scaling). Whenever the `current_core_count` for a site changes, `PandaClient.add_target_slots(site, core_count)` is called to update the target slot count on the PanDA server.
 
 ### Worker scaling (`slice_result`)
 
@@ -84,8 +85,9 @@ Passed from `Transceiver._run_worker` into every `worker_handler` call:
 | `timetolive` | `int` | STOMP message TTL in ms |
 | `slice_config` | `dict` | `{processing_time: <seconds>}` |
 | `core_count_cache` | `TTLCache` | Shared mutable cache; `handle_slice_result` updates it in-place |
+| `site_core_count_cache` | `TTLCache` | `site → core_count` cache; updated by `handle_slice_result`, triggers `add_target_slots` on change |
 | `mode` | `str` | `"message"` or `"rest"` |
-| `panda_client` | `PandaClient\|None` | Set only when `mode == "rest"` |
+| `panda_client` | `PandaClient` | Always set; used for iDDS REST calls in `rest` mode and for `add_target_slots` in either mode |
 
 ## PandaClient (panda.py)
 
@@ -102,6 +104,8 @@ Methods mirror the three outbound message types:
 - `idds_create_workflow_task(run_id, content)`
 - `idds_adjust_worker(run_id, idds_ids, content)`
 - `idds_close_workflow_task(run_id, idds_ids)`
+
+`add_target_slots(panda_queue, slots, global_share=None, resource_type=None, expiration_date=None)` calls the PanDA server's `POST /v1/harvester/add_target_slots` directly via `pandaclient.Client.http_request_decorator` (not iDDS). Called from `Transceiver._dispatch` (`run_imminent_worker`) and `handle_slice_result` whenever the cached `current_core_count` for a site changes.
 
 ## Logging convention
 

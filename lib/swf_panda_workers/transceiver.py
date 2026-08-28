@@ -276,6 +276,15 @@ class Transceiver(BaseAgent):
                                 "site_to_core_count_cache[%s]: %s -> %s (changed=%s)",
                                 site, previous_core_count, core_count, changed,
                             )
+                            if changed:
+                                panda_client = handler_kwargs.get("panda_client")
+                                if panda_client:
+                                    try:
+                                        panda_client.add_target_slots(site, core_count, logger=self.logger)
+                                    except Exception as ex:
+                                        self.logger.warning("Failed to add_target_slots for site=%s: %s", site, ex)
+                                else:
+                                    self.logger.warning("panda_client not available; cannot add_target_slots for site=%s", site)
                         except Exception:
                             # fallback: store bare number
                             try:
@@ -360,7 +369,9 @@ class Transceiver(BaseAgent):
                 logger=self.logger,
             )
 
-        panda_client = PandaClient() if self.mode == "rest" else None
+        # Always instantiated: add_target_slots (harvester target-slot updates) is a
+        # direct PanDA server REST call regardless of transceiver mode.
+        panda_client = PandaClient()
 
         self._handler_kwargs = {
             "transformer_broadcaster": transformer_broadcaster,

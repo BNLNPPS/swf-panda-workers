@@ -8,10 +8,13 @@
 # Authors:
 # - Wen Guan, <wen.guan@cern.ch>, 2026
 
+import logging
 import os
 import traceback
 
 import configparser as ConfigParser
+
+_logger = logging.getLogger(__name__)
 
 
 class PandaClient(object):
@@ -40,7 +43,7 @@ class PandaClient(object):
 
     def load_panda_urls(self):
         panda_config = self.load_panda_config()
-        self.logger.debug("panda config: %s" % panda_config)
+        _logger.debug("panda config: %s" % panda_config)
         self.panda_url = None
         self.panda_url_ssl = None
         self.panda_monitor = None

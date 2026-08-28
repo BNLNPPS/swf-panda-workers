@@ -60,6 +60,8 @@ def _build_create_workflow_task_message(msg, panda_attributes, timetolive):
         },
     }
 
+    workflow["content"]["streaming_mode"] = content.get("streaming_mode") or panda_attributes.get("streaming_mode", False)
+
     workflow_msg = {
         "msg_type": "create_workflow_task",
         "run_id": run_id,
@@ -240,6 +242,15 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
             logger.info(
                 f"site_to_core_count_cache[{site}]: {previous_core_count} -> {new_core_count} (changed={site_changed})"
             )
+            if site_changed:
+                panda_client = handler_kwargs.get("panda_client")
+                if panda_client:
+                    try:
+                        panda_client.add_target_slots(site, new_core_count, logger=logger)
+                    except Exception as ex:
+                        logger.warning(f"Failed to add_target_slots for site={site}: {ex}")
+                else:
+                    logger.warning(f"panda_client not available; cannot add_target_slots for site={site}")
         except Exception as ex:
             logger.warning(f"Failed to update site_to_core_count_cache for site={site}: {ex}")
 
@@ -248,6 +259,12 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
         "content": {
             "core_count": new_core_count,
             "site": site,
+            # include streaming_mode from run-level id map if present
+            "streaming_mode": (
+                (handler_kwargs.get("run_to_idds_ids_cache", {}).get(run_id) or {}).get("streaming_mode")
+                if handler_kwargs.get("run_to_idds_ids_cache") is not None
+                else None
+            ),
         },
     }
 
@@ -336,6 +353,8 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             else:
                 content = workflow_msg["content"]
                 workflow = content["workflow"]
+                # capture streaming_mode from message or panda attributes and persist in id mapping cache
+                streaming_mode_val = content.get("workflow", {}).get("content", {}).get("streaming_mode") or panda_attributes.get("streaming_mode")
                 # call iDDS directly and persist returned ids when available
                 try:
                     logger.info(f"Calling iDDS create_workflow_task for run_id={run_id} with workflow: {workflow}")
@@ -351,6 +370,9 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                             "transform_id": create_ret.get("transform_id"),
                             "workload_id": create_ret.get("workload_id"),
                         }
+                        # include streaming_mode if available
+                        if streaming_mode_val is not None:
+                            id_map["streaming_mode"] = streaming_mode_val
                         try:
                             run_to_idds_ids_cache[run_id] = id_map
                             logger.debug(f"Cached idds ids for run_id={run_id}: {id_map}")
@@ -381,7 +403,14 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             # persist mapping if the cache is available (harmless duplicate if Transceiver also caches)
             if run_id and run_to_idds_ids_cache:
                 try:
-                    run_to_idds_ids_cache[run_id] = ret
+                    # merge existing mapping and include streaming_mode if known
+                    existing = run_to_idds_ids_cache.get(run_id, {})
+                    merged = {**(existing or {}), **ret}
+                    # prefer explicit streaming_mode in incoming message content
+                    sm = (msg.get("content", {}).get("streaming_mode") or existing.get("streaming_mode"))
+                    if sm is not None:
+                        merged["streaming_mode"] = sm
+                    run_to_idds_ids_cache[run_id] = merged
                     logger.debug(f"Cached idds ids for run_id={run_id}: {ret}")
                 except Exception as ex:
                     logger.warning(f"Failed to write idds ids cache: {ex}")
@@ -454,6 +483,13 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
         elif msg_type in ("adjusted_worker"):
             # iDDS may send an "adjust_worker" message back with the applied params.
             content = msg.get("content", {})
+            # ensure streaming_mode is present from run-level cache if not supplied
+            try:
+                existing = run_to_idds_ids_cache.get(run_id, {}) if run_to_idds_ids_cache else {}
+                if "streaming_mode" not in content and existing and isinstance(existing, dict):
+                    content["streaming_mode"] = existing.get("streaming_mode")
+            except Exception:
+                pass
             new_core = content.get("core_count")
             site = content.get("site") or (content.get("content", {}) or {}).get("site")
             # update core_count_cache: preserve initial_core_count if present
@@ -500,8 +536,12 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                         "transform_id": content.get("transform_id"),
                         "workload_id": content.get("workload_id"),
                     }
-                    # merge with existing mapping if any
+                    # include streaming_mode from message or cached mapping
                     existing = run_to_idds_ids_cache.get(run_id, {})
+                    sm = content.get("streaming_mode") or (existing.get("streaming_mode") if isinstance(existing, dict) else None)
+                    if sm is not None:
+                        id_map["streaming_mode"] = sm
+                    # merge with existing mapping if any
                     merged = {**(existing or {}), **{k: v for k, v in id_map.items() if v is not None}}
                     run_to_idds_ids_cache[run_id] = merged
                     logger.debug(f"Updated id mapping cache from adjust_worker for run_id={run_id}: {merged}")
@@ -511,6 +551,13 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
         elif msg_type in ("closed_workflow_task"):
             # iDDS notifies that a workflow has been closed. Mark cache entries accordingly.
             content = msg.get("content", {})
+            # ensure streaming_mode is present from run-level cache if not supplied
+            try:
+                existing = run_to_idds_ids_cache.get(run_id, {}) if run_to_idds_ids_cache else {}
+                if "streaming_mode" not in content and existing and isinstance(existing, dict):
+                    content["streaming_mode"] = existing.get("streaming_mode")
+            except Exception:
+                pass
             status = content.get("status")
             try:
                 core_count_cache = handler_kwargs.get("core_count_cache", {})
@@ -539,6 +586,10 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                         "status": status,
                     }
                     existing = run_to_idds_ids_cache.get(run_id, {})
+                    # include streaming_mode from content or existing cache
+                    sm = content.get("streaming_mode") or (existing.get("streaming_mode") if isinstance(existing, dict) else None)
+                    if sm is not None:
+                        id_map["streaming_mode"] = sm
                     merged = {**(existing or {}), **{k: v for k, v in id_map.items() if v is not None}}
                     run_to_idds_ids_cache[run_id] = merged
                     logger.debug(f"Updated id mapping cache from close_workflow_task for run_id={run_id}: {merged}")
