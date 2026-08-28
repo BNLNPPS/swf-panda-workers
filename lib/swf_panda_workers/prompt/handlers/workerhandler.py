@@ -107,6 +107,7 @@ def _build_adjust_worker_message(msg, idds_ids, timetolive):
             "core_count": content.get("core_count") or content.get("num_cores_per_worker"),
             "memory_per_core": content.get("memory_per_core") or content.get("num_ram_per_core"),
             "site": content.get("site"),
+            "streaming_mode": content.get("streaming_mode"),
         },
     }
 
