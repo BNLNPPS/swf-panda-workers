@@ -57,7 +57,11 @@ Both run-level caches are backed by SQLite (`cache.path` in yaml, default `~/.ca
 - `run_to_core_count_cache`: `"<namespace>:<run_id>" → current core_count` (seeded from `run_imminent`, updated by `slice_result` scaling)
 - `site_to_core_count_cache`: `site → {initial_core_count, current_core_count, changed}` — keyed by physical PanDA site only (not namespace-scoped), since target slots are a shared PanDA-server resource. Seeded from `run_imminent_worker`, updated by `slice_result` scaling. Whenever the `current_core_count` for a site changes, `PandaClient.add_target_slots(site, core_count)` is called to update the target slot count on the PanDA server.
 
-Run-level cache keys are namespace-scoped (`Transceiver.cache_key` / `workerhandler._cache_key`) because a `Transceiver` with `namespace: null` processes messages from every namespace, so identical `run_id`s from different namespaces (e.g. `prod` vs `dev_alice`) would otherwise collide. The namespace used for the key comes from the STOMP header (where `Publisher.publish()` actually injects it), falling back to the message body and then to the `Transceiver`'s own configured namespace.
+Run-level cache keys are namespace-scoped (`Transceiver.cache_key` / `workerhandler._cache_key`) because a `Transceiver` with `namespace: all` (the default) processes messages from every namespace, so identical `run_id`s from different namespaces (e.g. `prod` vs `dev_alice`) would otherwise collide. The namespace used for the key comes from the STOMP header (where `Publisher.publish()` actually injects it), falling back to the message body and then to the `Transceiver`'s own configured namespace.
+
+### Namespace (`transceiver.namespace` in yaml, `NAMESPACE_ALL` in `brokers/activemq.py`)
+
+`NAMESPACE_ALL = "all"` is the sentinel default (also the fallback used by `utils/config.py` and `Transceiver.__init__`). A `Transceiver` configured with a real namespace (e.g. `"prod"`) filters inbound messages via the STOMP subscription selector (`Subscriber._build_selector`) and tags outbound messages with that namespace (`Publisher.publish`). `NAMESPACE_ALL` disables both: no selector clause is added and no `namespace` header is injected, so the agent sends/receives across every namespace.
 
 ### Worker scaling (`slice_result`)
 

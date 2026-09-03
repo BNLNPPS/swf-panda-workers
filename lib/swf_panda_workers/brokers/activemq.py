@@ -62,6 +62,11 @@ import stomp
 
 logger = logging.getLogger(__name__)
 
+# Sentinel namespace value: a Publisher/Subscriber configured with this
+# namespace does not filter/tag by namespace at all — it sends and receives
+# messages for every namespace.
+NAMESPACE_ALL = "all"
+
 if os.environ.get("STOMP_DEBUG") in ("1", "true", "True"):
     logging.getLogger("stomp").setLevel(logging.DEBUG)
 else:
@@ -217,14 +222,15 @@ class Publisher:
 
         :param msg:     Message body (dict).
         :param headers: STOMP headers dict.  ``namespace`` is injected from
-                        ``self._namespace`` if absent.
+                        ``self._namespace`` if absent (unless ``self._namespace``
+                        is ``NAMESPACE_ALL``, which tags nothing).
         """
         if self._stopped:
             self._log.warning(f"[{self._name}] publish() called after stop(); ignoring.")
             return
 
         send_headers = dict(headers or {})
-        if self._namespace and "namespace" not in send_headers:
+        if self._namespace and self._namespace != NAMESPACE_ALL and "namespace" not in send_headers:
             send_headers["namespace"] = self._namespace
 
         body = json.dumps(msg, default=str)
@@ -412,8 +418,8 @@ class Subscriber:
         """
         parts = []
 
-        # Namespace filter
-        if self._namespace:
+        # Namespace filter (NAMESPACE_ALL subscribes to every namespace)
+        if self._namespace and self._namespace != NAMESPACE_ALL:
             parts.append(f"namespace='{self._namespace}'")
 
         # Broker-level selector (may already include run_id filter, etc.)

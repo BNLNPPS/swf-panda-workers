@@ -6,11 +6,11 @@
 # Transceiver agent settings
 # ---------------------------------------------------------------------------
 transceiver:
-  # Deployment namespace – injected as `instance` in every message header,
-  # and used to filter inbound messages to only those from this namespace.
+  # Deployment namespace – tagged onto every outbound message header, and
+  # used to filter inbound messages to only those from this namespace.
   # Typical values: "prod", "dev", "dev_<userid>".
-  # If unset (or null), no namespace filtering is applied and messages from
-  # all namespaces are processed.
+  # Special value "all" (the default if unset) disables namespace
+  # filtering/tagging entirely: messages from every namespace are processed.
   namespace: dev
 
   # Number of worker threads spawned by the Transceiver agent

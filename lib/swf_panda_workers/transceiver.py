@@ -42,7 +42,7 @@ import traceback
 
 from swf_common_lib.base_agent import BaseAgent
 
-from .brokers.activemq import Publisher, Subscriber
+from .brokers.activemq import NAMESPACE_ALL, Publisher, Subscriber
 from .prompt.handlers.panda import PandaClient
 from .prompt.handlers.workerhandler import worker_handler
 from .utils.cache import PersistentTTLCache
@@ -76,7 +76,7 @@ class Transceiver(BaseAgent):
 
     def __init__(
         self,
-        namespace=None,
+        namespace=NAMESPACE_ALL,
         num_threads=8,
         timetolive=12 * 3600 * 1000,
         transformer_broadcast_broker=None,
@@ -207,8 +207,8 @@ class Transceiver(BaseAgent):
         """
         Build a namespace-scoped cache key ('<namespace>:<run_id>') so that
         identical run_ids from different namespaces don't collide when this
-        agent has no namespace filter set (self.namespace is None) and
-        therefore processes messages from every namespace.
+        agent's namespace is NAMESPACE_ALL and it therefore processes
+        messages from every namespace.
         """
         return f"{self.get_namespace(header, msg) or ''}:{self.get_run_id(msg)}"
 
@@ -249,9 +249,15 @@ class Transceiver(BaseAgent):
 
         # Namespace filtering (namespace lives on the STOMP header, see
         # Publisher.publish(); msg.get("namespace") is checked too in case a
-        # caller ever puts it in the body instead)
+        # caller ever puts it in the body instead). NAMESPACE_ALL means this
+        # agent processes messages from every namespace.
         msg_namespace = self.get_namespace(header, msg)
-        if self.namespace and msg_namespace and msg_namespace != self.namespace:
+        if (
+            self.namespace
+            and self.namespace != NAMESPACE_ALL
+            and msg_namespace
+            and msg_namespace != self.namespace
+        ):
             self.logger.debug(
                 "Ignoring message from namespace '%s' (ours: '%s')",
                 msg_namespace,

@@ -18,6 +18,8 @@ import sys
 
 import yaml
 
+from ..brokers.activemq import NAMESPACE_ALL
+
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_NAME = "swf_panda_workers.yaml"
@@ -76,7 +78,7 @@ def build_transceiver_kwargs(cfg):
     c_cfg = cfg.get("cache", {})
 
     return {
-        "namespace": t_cfg.get("namespace", None),
+        "namespace": t_cfg.get("namespace", NAMESPACE_ALL),
         "num_threads": t_cfg.get("num_threads", 8),
         "timetolive": t_cfg.get("timetolive", 12 * 3600 * 1000),
         "transformer_broadcast_broker": b_cfg.get("transformer_broadcast"),
