@@ -16,6 +16,24 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
+def _cache_key(header, msg, handler_kwargs=None):
+    """
+    Build a namespace-scoped cache key ('<namespace>:<run_id>') for
+    run_to_idds_ids_cache / core_count_cache lookups.
+
+    Identical run_ids can occur in different namespaces once a Transceiver's
+    own namespace is unset (it then processes messages from every
+    namespace), so the cache key must include the namespace to avoid
+    collisions. The STOMP header (where Publisher.publish() actually injects
+    it) takes priority, falling back to the message body and then to the
+    Transceiver's own namespace (handler_kwargs['namespace']).
+    """
+    header = header or {}
+    handler_kwargs = handler_kwargs or {}
+    namespace = header.get("namespace") or msg.get("namespace") or handler_kwargs.get("namespace") or ""
+    return f"{namespace}:{msg.get('run_id')}"
+
+
 # ---------------------------------------------------------------------------
 # Message builders
 # ---------------------------------------------------------------------------
@@ -158,12 +176,12 @@ def _build_close_workflow_task_message(idds_ids, run_id, timetolive):
 # Handlers
 # ---------------------------------------------------------------------------
 
-def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
+def handle_slice_result(header, msg, idds_ids, handler_kwargs, timetolive, logger):
     """
     Handle a 'slice_result' message: scale up workers if actual processing time
     exceeds the configured threshold by 20 % (scale 1.2×) or 50 % (scale 1.5×).
 
-    Reads/updates core_count from handler_kwargs['core_count_cache'][run_id].
+    Reads/updates core_count from handler_kwargs['core_count_cache'][namespace:run_id].
     Configured threshold comes from handler_kwargs['slice_config']['processing_time']
     (default 30 s).
     """
@@ -171,12 +189,13 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
     run_id = msg.get("run_id")
     content = msg.get("content", {})
     actual_time = content.get("processing_time")
+    cache_key = _cache_key(header, msg, handler_kwargs)
 
     slice_cfg = handler_kwargs.get("slice_config", {})
     config_time = slice_cfg.get("processing_time", 30)
 
     core_count_cache = handler_kwargs.get("core_count_cache", {})
-    cache_entry = core_count_cache.get(run_id)
+    cache_entry = core_count_cache.get(cache_key)
 
     if actual_time is None or cache_entry is None:
         if logger:
@@ -214,7 +233,7 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
 
     # Update cache entry with current_core_count while preserving initial
     try:
-        core_count_cache[run_id] = {
+        core_count_cache[cache_key] = {
             "initial_core_count": initial_core_count,
             "current_core_count": new_core_count,
             "initial_site": cache_entry.get("initial_site") if isinstance(cache_entry, dict) else site,
@@ -222,7 +241,7 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
         }
     except Exception:
         # fallback to storing bare number if cache write fails
-        core_count_cache[run_id] = new_core_count
+        core_count_cache[cache_key] = new_core_count
 
     # Record site -> core_count mapping, noting whether it changed
     site_core_count_cache = handler_kwargs.get("site_core_count_cache")
@@ -262,7 +281,7 @@ def handle_slice_result(msg, idds_ids, handler_kwargs, timetolive, logger):
             "site": site,
             # include streaming_mode from run-level id map if present
             "streaming_mode": (
-                (handler_kwargs.get("run_to_idds_ids_cache", {}).get(run_id) or {}).get("streaming_mode")
+                (handler_kwargs.get("run_to_idds_ids_cache", {}).get(cache_key) or {}).get("streaming_mode")
                 if handler_kwargs.get("run_to_idds_ids_cache") is not None
                 else None
             ),
@@ -315,6 +334,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
     ret = {}
     msg_type = msg.get("msg_type")
     run_id = msg.get("run_id")
+    cache_key = _cache_key(_header, msg, handler_kwargs)
 
     timetolive = 12 * 3600 * 1000
     panda_attributes = {}
@@ -375,7 +395,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                         if streaming_mode_val is not None:
                             id_map["streaming_mode"] = streaming_mode_val
                         try:
-                            run_to_idds_ids_cache[run_id] = id_map
+                            run_to_idds_ids_cache[cache_key] = id_map
                             logger.debug(f"Cached idds ids for run_id={run_id}: {id_map}")
                         except Exception as ex:
                             logger.warning(f"Failed to write idds ids cache: {ex}")
@@ -405,13 +425,13 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             if run_id and run_to_idds_ids_cache:
                 try:
                     # merge existing mapping and include streaming_mode if known
-                    existing = run_to_idds_ids_cache.get(run_id, {})
+                    existing = run_to_idds_ids_cache.get(cache_key, {})
                     merged = {**(existing or {}), **ret}
                     # prefer explicit streaming_mode in incoming message content
                     sm = (msg.get("content", {}).get("streaming_mode") or existing.get("streaming_mode"))
                     if sm is not None:
                         merged["streaming_mode"] = sm
-                    run_to_idds_ids_cache[run_id] = merged
+                    run_to_idds_ids_cache[cache_key] = merged
                     logger.debug(f"Cached idds ids for run_id={run_id}: {ret}")
                 except Exception as ex:
                     logger.warning(f"Failed to write idds ids cache: {ex}")
@@ -455,7 +475,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                     # optionally cache the closed status
                     if run_id and run_to_idds_ids_cache:
                         try:
-                            run_to_idds_ids_cache[run_id] = {
+                            run_to_idds_ids_cache[cache_key] = {
                                 "run_id": run_id,
                                 "request_id": close_ret.get("request_id"),
                                 "transform_id": close_ret.get("transform_id"),
@@ -473,6 +493,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
 
         elif msg_type == "slice_result":
             handle_slice_result(
+                _header,
                 msg,
                 idds_ids,
                 handler_kwargs,
@@ -486,7 +507,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             content = msg.get("content", {})
             # ensure streaming_mode is present from run-level cache if not supplied
             try:
-                existing = run_to_idds_ids_cache.get(run_id, {}) if run_to_idds_ids_cache else {}
+                existing = run_to_idds_ids_cache.get(cache_key, {}) if run_to_idds_ids_cache else {}
                 if "streaming_mode" not in content and existing and isinstance(existing, dict):
                     content["streaming_mode"] = existing.get("streaming_mode")
             except Exception:
@@ -496,10 +517,10 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             # update core_count_cache: preserve initial_core_count if present
             core_count_cache = handler_kwargs.get("core_count_cache", {})
             try:
-                cache_entry = core_count_cache.get(run_id)
+                cache_entry = core_count_cache.get(cache_key)
                 if cache_entry is None:
                     if new_core is not None:
-                        core_count_cache[run_id] = {
+                        core_count_cache[cache_key] = {
                             "initial_core_count": new_core,
                             "current_core_count": new_core,
                             "initial_site": site,
@@ -509,7 +530,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                 else:
                     if isinstance(cache_entry, dict):
                         initial = cache_entry.get("initial_core_count") or new_core or cache_entry.get("current_core_count")
-                        core_count_cache[run_id] = {
+                        core_count_cache[cache_key] = {
                             "initial_core_count": initial,
                             "current_core_count": new_core or cache_entry.get("current_core_count"),
                             "initial_site": cache_entry.get("initial_site") or site,
@@ -518,7 +539,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                     else:
                         # previous format (number)
                         initial = cache_entry
-                        core_count_cache[run_id] = {
+                        core_count_cache[cache_key] = {
                             "initial_core_count": initial,
                             "current_core_count": new_core or initial,
                             "initial_site": site,
@@ -538,13 +559,13 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                         "workload_id": content.get("workload_id"),
                     }
                     # include streaming_mode from message or cached mapping
-                    existing = run_to_idds_ids_cache.get(run_id, {})
+                    existing = run_to_idds_ids_cache.get(cache_key, {})
                     sm = content.get("streaming_mode") or (existing.get("streaming_mode") if isinstance(existing, dict) else None)
                     if sm is not None:
                         id_map["streaming_mode"] = sm
                     # merge with existing mapping if any
                     merged = {**(existing or {}), **{k: v for k, v in id_map.items() if v is not None}}
-                    run_to_idds_ids_cache[run_id] = merged
+                    run_to_idds_ids_cache[cache_key] = merged
                     logger.debug(f"Updated id mapping cache from adjust_worker for run_id={run_id}: {merged}")
                 except Exception as ex:
                     logger.warning(f"Failed to update id mapping cache from adjust_worker: {ex}")
@@ -554,7 +575,7 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             content = msg.get("content", {})
             # ensure streaming_mode is present from run-level cache if not supplied
             try:
-                existing = run_to_idds_ids_cache.get(run_id, {}) if run_to_idds_ids_cache else {}
+                existing = run_to_idds_ids_cache.get(cache_key, {}) if run_to_idds_ids_cache else {}
                 if "streaming_mode" not in content and existing and isinstance(existing, dict):
                     content["streaming_mode"] = existing.get("streaming_mode")
             except Exception:
@@ -562,16 +583,16 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
             status = content.get("status")
             try:
                 core_count_cache = handler_kwargs.get("core_count_cache", {})
-                cache_entry = core_count_cache.get(run_id)
+                cache_entry = core_count_cache.get(cache_key)
                 if cache_entry is None:
                     # nothing to update, but we can record the closed status in a small dict
-                    core_count_cache[run_id] = {"status": status}
+                    core_count_cache[cache_key] = {"status": status}
                 else:
                     if isinstance(cache_entry, dict):
                         cache_entry["status"] = status
-                        core_count_cache[run_id] = cache_entry
+                        core_count_cache[cache_key] = cache_entry
                     else:
-                        core_count_cache[run_id] = {"initial_core_count": cache_entry, "status": status}
+                        core_count_cache[cache_key] = {"initial_core_count": cache_entry, "status": status}
                 logger.info(f"Processed close_workflow_task from iDDS for run_id={run_id}: status={status}")
             except Exception as ex:
                 logger.warning(f"Failed to update core_count cache for close_workflow_task: {ex}")
@@ -586,13 +607,13 @@ def worker_handler(_header, msg, idds_ids=None, handler_kwargs={}, logger=None):
                         "workload_id": content.get("workload_id"),
                         "status": status,
                     }
-                    existing = run_to_idds_ids_cache.get(run_id, {})
+                    existing = run_to_idds_ids_cache.get(cache_key, {})
                     # include streaming_mode from content or existing cache
                     sm = content.get("streaming_mode") or (existing.get("streaming_mode") if isinstance(existing, dict) else None)
                     if sm is not None:
                         id_map["streaming_mode"] = sm
                     merged = {**(existing or {}), **{k: v for k, v in id_map.items() if v is not None}}
-                    run_to_idds_ids_cache[run_id] = merged
+                    run_to_idds_ids_cache[cache_key] = merged
                     logger.debug(f"Updated id mapping cache from close_workflow_task for run_id={run_id}: {merged}")
                 except Exception as ex:
                     logger.warning(f"Failed to update id mapping cache from close_workflow_task: {ex}")

@@ -51,11 +51,13 @@ run_end/run_stop/end_run → stop_transformer broadcast to /topic/panda.transfor
 
 ### Caches (PersistentTTLCache, 3-day TTL, in `Transceiver`)
 
-Both caches are backed by SQLite (`cache.path` in yaml, default `~/.cache/swf_panda_workers/cache.db`) and survive process restarts.
+Both run-level caches are backed by SQLite (`cache.path` in yaml, default `~/.cache/swf_panda_workers/cache.db`) and survive process restarts.
 
-- `run_to_idds_ids_cache`: `run_id → {run_id, request_id, transform_id, workload_id}`
-- `run_to_core_count_cache`: `run_id → current core_count` (seeded from `run_imminent`, updated by `slice_result` scaling)
-- `site_to_core_count_cache`: `site → {initial_core_count, current_core_count, changed}` (seeded from `run_imminent_worker`, updated by `slice_result` scaling). Whenever the `current_core_count` for a site changes, `PandaClient.add_target_slots(site, core_count)` is called to update the target slot count on the PanDA server.
+- `run_to_idds_ids_cache`: `"<namespace>:<run_id>" → {run_id, request_id, transform_id, workload_id}`
+- `run_to_core_count_cache`: `"<namespace>:<run_id>" → current core_count` (seeded from `run_imminent`, updated by `slice_result` scaling)
+- `site_to_core_count_cache`: `site → {initial_core_count, current_core_count, changed}` — keyed by physical PanDA site only (not namespace-scoped), since target slots are a shared PanDA-server resource. Seeded from `run_imminent_worker`, updated by `slice_result` scaling. Whenever the `current_core_count` for a site changes, `PandaClient.add_target_slots(site, core_count)` is called to update the target slot count on the PanDA server.
+
+Run-level cache keys are namespace-scoped (`Transceiver.cache_key` / `workerhandler._cache_key`) because a `Transceiver` with `namespace: null` processes messages from every namespace, so identical `run_id`s from different namespaces (e.g. `prod` vs `dev_alice`) would otherwise collide. The namespace used for the key comes from the STOMP header (where `Publisher.publish()` actually injects it), falling back to the message body and then to the `Transceiver`'s own configured namespace.
 
 ### Worker scaling (`slice_result`)
 
@@ -79,6 +81,7 @@ Passed from `Transceiver._run_worker` into every `worker_handler` call:
 
 | Key | Type | Description |
 |---|---|---|
+| `namespace` | `str\|None` | The `Transceiver`'s own configured namespace; used by `workerhandler._cache_key` as the fallback when a message carries no namespace of its own |
 | `transformer_broadcaster` | `Publisher\|None` | Broadcasts `stop_transformer` |
 | `panda_workers_publisher` | `Publisher\|None` | Publishes to `/topic/panda.workers` (message mode) |
 | `panda_attributes` | `dict` | PanDA task params forwarded from `panda:` config section |

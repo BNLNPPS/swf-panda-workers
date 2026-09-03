@@ -120,7 +120,7 @@ class Transceiver(BaseAgent):
                 os.unlink(_tmp.name)
 
         # yaml namespace takes priority over testbed.toml
-        if namespace is not None:
+        if namespace is not None and len(namespace):
             self.namespace = namespace
 
         self.num_threads = num_threads
@@ -194,19 +194,37 @@ class Transceiver(BaseAgent):
         """Get run_id from message."""
         return msg.get("run_id", None)
 
-    def cache_idds_ids(self, msg, idds_ids):
-        """Cache {request_id, transform_id, workload_id} for a given run_id."""
-        run_id = self.get_run_id(msg)
-        if run_id:
-            self.run_to_idds_ids_cache[run_id] = idds_ids
-            self.logger.debug("Cached idds_ids=%s for run_id=%s", idds_ids, run_id)
+    def get_namespace(self, header, msg):
+        """
+        Resolve the namespace a message belongs to: the STOMP header (where
+        Publisher.publish() actually injects it) takes priority, falling back
+        to the message body and then to this agent's own namespace.
+        """
+        header = header or {}
+        return header.get("namespace") or msg.get("namespace") or self.namespace
 
-    def get_idds_ids_from_cache(self, msg):
-        """Retrieve cached {request_id, transform_id, workload_id} for a given run_id."""
-        run_id = self.get_run_id(msg)
-        idds_ids = self.run_to_idds_ids_cache.get(run_id, None)
+    def cache_key(self, header, msg):
+        """
+        Build a namespace-scoped cache key ('<namespace>:<run_id>') so that
+        identical run_ids from different namespaces don't collide when this
+        agent has no namespace filter set (self.namespace is None) and
+        therefore processes messages from every namespace.
+        """
+        return f"{self.get_namespace(header, msg) or ''}:{self.get_run_id(msg)}"
+
+    def cache_idds_ids(self, header, msg, idds_ids):
+        """Cache {request_id, transform_id, workload_id} for a given (namespace, run_id)."""
+        if self.get_run_id(msg):
+            key = self.cache_key(header, msg)
+            self.run_to_idds_ids_cache[key] = idds_ids
+            self.logger.debug("Cached idds_ids=%s for key=%s", idds_ids, key)
+
+    def get_idds_ids_from_cache(self, header, msg):
+        """Retrieve cached {request_id, transform_id, workload_id} for a given (namespace, run_id)."""
+        key = self.cache_key(header, msg)
+        idds_ids = self.run_to_idds_ids_cache.get(key, None)
         if not idds_ids:
-            self.logger.warning("No cached idds_ids found for run_id=%s", run_id)
+            self.logger.warning("No cached idds_ids found for key=%s", key)
         return idds_ids
 
     # ------------------------------------------------------------------
@@ -229,8 +247,10 @@ class Transceiver(BaseAgent):
         msg_type = msg.get("msg_type")
         run_id = msg.get("run_id")
 
-        # Namespace filtering
-        msg_namespace = msg.get("namespace")
+        # Namespace filtering (namespace lives on the STOMP header, see
+        # Publisher.publish(); msg.get("namespace") is checked too in case a
+        # caller ever puts it in the body instead)
+        msg_namespace = self.get_namespace(header, msg)
         if self.namespace and msg_namespace and msg_namespace != self.namespace:
             self.logger.debug(
                 "Ignoring message from namespace '%s' (ours: '%s')",
@@ -239,7 +259,8 @@ class Transceiver(BaseAgent):
             )
             return
 
-        self.logger.debug("Received message: msg_type=%s, run_id=%s", msg_type, run_id)
+        cache_key = self.cache_key(header, msg)
+        self.logger.debug("Received message: msg_type=%s, run_id=%s, namespace=%s", msg_type, run_id, msg_namespace)
 
         with self.processing():
             try:
@@ -249,14 +270,14 @@ class Transceiver(BaseAgent):
                     site = content.get("site") or self.panda_attributes.get("site")
                     if core_count and run_id:
                         try:
-                            self.run_to_core_count_cache[run_id] = {
+                            self.run_to_core_count_cache[cache_key] = {
                                 "initial_core_count": core_count,
                                 "current_core_count": core_count,
                                 "initial_site": site,
                                 "current_site": site,
                             }
                         except Exception:
-                            self.run_to_core_count_cache[run_id] = core_count
+                            self.run_to_core_count_cache[cache_key] = core_count
                     # Record site -> core_count mapping for quick lookup by site
                     if site:
                         try:
@@ -296,20 +317,20 @@ class Transceiver(BaseAgent):
                 elif msg_type == "created_workflow_task":
                     ret = worker_handler(header, msg, None, handler_kwargs, logger=self.logger)
                     if ret:
-                        self.cache_idds_ids(msg, ret)
+                        self.cache_idds_ids(header, msg, ret)
                 elif msg_type in ("adjusted_worker",):
                     ret = worker_handler(header, msg, None, handler_kwargs, logger=self.logger)
                     if ret:
-                        self.cache_idds_ids(msg, ret)
+                        self.cache_idds_ids(header, msg, ret)
                 elif msg_type in ("closed_workflow_task",):
                     ret = worker_handler(header, msg, None, handler_kwargs, logger=self.logger)
                     if ret:
-                        self.cache_idds_ids(msg, ret)
+                        self.cache_idds_ids(header, msg, ret)
                 elif msg_type in ("run_end", "end_run", "run_stop"):
-                    idds_ids = self.get_idds_ids_from_cache(msg)
+                    idds_ids = self.get_idds_ids_from_cache(header, msg)
                     worker_handler(header, msg, idds_ids, handler_kwargs, logger=self.logger)
                 elif msg_type == "slice_result":
-                    idds_ids = self.get_idds_ids_from_cache(msg)
+                    idds_ids = self.get_idds_ids_from_cache(header, msg)
                     worker_handler(header, msg, idds_ids, handler_kwargs, logger=self.logger)
                 elif msg_type == "transformer_heartbeat":
                     worker_handler(header, msg, None, handler_kwargs, logger=self.logger)
@@ -374,6 +395,7 @@ class Transceiver(BaseAgent):
         panda_client = PandaClient()
 
         self._handler_kwargs = {
+            "namespace": self.namespace,
             "transformer_broadcaster": transformer_broadcaster,
             "panda_workers_publisher": panda_workers_publisher,
             "panda_attributes": self.panda_attributes,
