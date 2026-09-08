@@ -58,7 +58,7 @@ def _build_create_workflow_task_message(msg, panda_attributes, timetolive):
 
     workflow = {
         "scope": scope,
-        "name": f"{scope}_{transform_tag}_{site}_{year}{month}{day}",
+        "name": f"{scope}_{transform_tag}_{run_id}_{site}_{year}{month}{day}",
         "requester": panda_attributes.get("username", "EIC"),
         "username": panda_attributes.get("username", "EIC"),
         "transform_tag": transform_tag,
